@@ -58,25 +58,25 @@ Add one of the following lines depending on your desired frequency:
 
 ```bash
 # Every 1 minute
-* * * * * cd /path/to/bms-alerts && /bin/bash run.sh
+* * * * * cd /path/to/bms-alerts && /bin/bash run.sh >> /path/to/bms-alerts/bms-cron-error.log 2>&1
 
 # Every 2 minutes
-*/2 * * * * cd /path/to/bms-alerts && /bin/bash run.sh
+*/2 * * * * cd /path/to/bms-alerts && /bin/bash run.sh >> /path/to/bms-alerts/bms-cron-error.log 2>&1
 
 # Every 5 minutes
-*/5 * * * * cd /path/to/bms-alerts && /bin/bash run.sh
+*/5 * * * * cd /path/to/bms-alerts && /bin/bash run.sh >> /path/to/bms-alerts/bms-cron-error.log 2>&1
 
 # Every 10 minutes
-*/10 * * * * cd /path/to/bms-alerts && /bin/bash run.sh
+*/10 * * * * cd /path/to/bms-alerts && /bin/bash run.sh >> /path/to/bms-alerts/bms-cron-error.log 2>&1
 
 # Every 15 minutes
-*/15 * * * * cd /path/to/bms-alerts && /bin/bash run.sh
+*/15 * * * * cd /path/to/bms-alerts && /bin/bash run.sh >> /path/to/bms-alerts/bms-cron-error.log 2>&1
 
 # Every 30 minutes
-*/30 * * * * cd /path/to/bms-alerts && /bin/bash run.sh
+*/30 * * * * cd /path/to/bms-alerts && /bin/bash run.sh >> /path/to/bms-alerts/bms-cron-error.log 2>&1
 
 # Every hour
-0 * * * * cd /path/to/bms-alerts && /bin/bash run.sh
+0 * * * * cd /path/to/bms-alerts && /bin/bash run.sh >> /path/to/bms-alerts/bms-cron-error.log 2>&1
 ```
 
 ## Configuration
