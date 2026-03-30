@@ -1,0 +1,5 @@
+node_modules/
+dist/
+.env
+bms.log
+l2-empuraan-bms-scraper/

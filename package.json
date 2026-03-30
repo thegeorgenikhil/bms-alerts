@@ -1,0 +1,22 @@
+{
+  "name": "bms-alerts",
+  "version": "1.0.0",
+  "description": "BookMyShow booking availability monitor with Telegram notifications",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsup",
+    "start": "node dist/index.js",
+    "browser:install": "npx puppeteer browsers install chrome"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "puppeteer": "^24.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "tsup": "^8.4.0",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2"
+  }
+}
