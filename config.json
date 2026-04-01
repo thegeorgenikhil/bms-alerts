@@ -7,14 +7,5 @@
         "date": "20260404",
         "found": false,
         "theatres": {}
-    },
-    {
-        "name": "Project Hail Mary",
-        "slug_name": "project-hail-mary-imax-2d",
-        "code": "ET00481564",
-        "city": "kochi",
-        "date": "20260402",
-        "found": false,
-        "theatres": {}
     }
 ]
