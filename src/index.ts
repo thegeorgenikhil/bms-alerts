@@ -71,7 +71,14 @@ function describeError(err: unknown): Record<string, unknown> {
   return details;
 }
 
-async function sendTelegramNotification(
+const TELEGRAM_MAX_ATTEMPTS = 3;
+const TELEGRAM_RETRY_DELAY_MS = 2000;
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function sendTelegramNotificationOnce(
   chatId: string,
   message: string,
   parseMode: string,
@@ -100,6 +107,28 @@ async function sendTelegramNotification(
     throw new Error(
       `Telegram API error (HTTP ${response.status}, code ${result.error_code}): ${result.description}`
     );
+  }
+}
+
+async function sendTelegramNotification(
+  chatId: string,
+  message: string,
+  parseMode: string,
+  keyboard: TelegramKeyboard
+) {
+  for (let attempt = 1; attempt <= TELEGRAM_MAX_ATTEMPTS; attempt++) {
+    try {
+      await sendTelegramNotificationOnce(chatId, message, parseMode, keyboard);
+      return;
+    } catch (err) {
+      if (attempt === TELEGRAM_MAX_ATTEMPTS) throw err;
+      log("warn", "Telegram send failed, retrying", {
+        attempt,
+        maxAttempts: TELEGRAM_MAX_ATTEMPTS,
+        ...describeError(err),
+      });
+      await sleep(TELEGRAM_RETRY_DELAY_MS * attempt);
+    }
   }
 }
 
