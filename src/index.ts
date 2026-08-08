@@ -48,6 +48,29 @@ function saveMovies(movies: MovieDetails[]) {
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(movies, null, 4) + "\n");
 }
 
+function describeError(err: unknown): Record<string, unknown> {
+  const details: Record<string, unknown> = { error: String(err) };
+  if (err instanceof Error && err.stack) {
+    details.stack = err.stack;
+  }
+  const causes: string[] = [];
+  let current: unknown = err;
+  while (current instanceof Error && current.cause !== undefined) {
+    const cause = current.cause;
+    if (cause instanceof Error) {
+      const code = (cause as NodeJS.ErrnoException).code;
+      causes.push(code ? `${code}: ${cause.message}` : String(cause));
+    } else {
+      causes.push(String(cause));
+    }
+    current = cause;
+  }
+  if (causes.length > 0) {
+    details.causes = causes;
+  }
+  return details;
+}
+
 async function sendTelegramNotification(
   chatId: string,
   message: string,
@@ -68,9 +91,15 @@ async function sendTelegramNotification(
     body: JSON.stringify(payload),
   });
 
-  const result = (await response.json()) as { ok: boolean; description?: string };
+  const result = (await response.json()) as {
+    ok: boolean;
+    description?: string;
+    error_code?: number;
+  };
   if (!result.ok) {
-    throw new Error(`Telegram API error: ${result.description}`);
+    throw new Error(
+      `Telegram API error (HTTP ${response.status}, code ${result.error_code}): ${result.description}`
+    );
   }
 }
 
@@ -190,7 +219,7 @@ async function main() {
             await sendTelegramNotification(TELEGRAM_CHAT_ID, notificationMsg, "Markdown", bookingKeyboard);
           } catch (err) {
             log("error", "Error sending Telegram notification", {
-              movie: movie.name, theatre: theatre.name, error: String(err),
+              movie: movie.name, theatre: theatre.name, ...describeError(err),
             });
           }
 
@@ -210,7 +239,7 @@ async function main() {
               await sendTelegramNotification(TELEGRAM_CHAT_ID, notificationMsg, "Markdown", bookingKeyboard);
             } catch (err) {
               log("error", "Error sending Telegram notification", {
-                movie: movie.name, theatre: theatre.name, error: String(err),
+                movie: movie.name, theatre: theatre.name, ...describeError(err),
               });
             }
 
