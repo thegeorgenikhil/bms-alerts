@@ -1,11 +1,11 @@
 [
-    {
-        "name": "The Odyssey",
-        "slug_name": "the-odyssey",
-        "code": "ET00480917",
-        "city": "kochi",
-        "date": "20260725",
-        "found": false,
-        "theatres": {}
-    }
+  {
+    "name": "The Odyssey",
+    "slug_name": "the-odyssey",
+    "code": "ET00480917",
+    "city": "kochi",
+    "date": "20260816",
+    "found": false,
+    "theatres": {}
+  }
 ]

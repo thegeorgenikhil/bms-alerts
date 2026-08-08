@@ -142,20 +142,22 @@ async function main() {
         continue;
       }
 
-      const theatreElements = await theatreContainer.$$(".sc-e8nk8f-3.kJBeM");
+      // Only use the stable styled-components prefix classes (sc-*); the
+      // hashed companion classes (e.g. "kJBeM") change between BMS builds.
+      const theatreElements = await theatreContainer.$$(".sc-e8nk8f-3");
 
       const scrapedTheatres: ScrapedTheatre[] = [];
       for (const theatreEl of theatreElements) {
-        const theatreNameDiv = await theatreEl.$(".sc-1h5m8q1-2.kWgwmN");
+        const theatreNameDiv = await theatreEl.$(".sc-1h5m8q1-2");
         const theatreName = theatreNameDiv
           ? await theatreNameDiv.evaluate((el) => el.textContent || "")
           : "";
 
-        const showSlots = await theatreEl.$$(".sc-1la7659-0.hjHrop");
+        const showSlots = await theatreEl.$$(".sc-1la7659-0");
         const timings: string[] = [];
         for (const slot of showSlots) {
-          const timeEl = await slot.$(".sc-1vhizuf-2.euWjeN");
-          const tagEl = await slot.$(".sc-1vhizuf-3.hvOnEj");
+          const timeEl = await slot.$(".sc-1vhizuf-2");
+          const tagEl = await slot.$(".sc-1vhizuf-3");
           const time = timeEl ? await timeEl.evaluate((el) => el.textContent || "") : "";
           const tag = tagEl ? await tagEl.evaluate((el) => el.textContent || "") : "";
           if (time.trim()) {
