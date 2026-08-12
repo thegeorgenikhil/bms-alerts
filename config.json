@@ -7,5 +7,14 @@
         "date": "20260816",
         "found": false,
         "theatres": {}
+    },
+    {
+        "name": "Khalifa",
+        "slug_name": "khalifa",
+        "code": "ET00467751",
+        "city": "kochi",
+        "date": "20260822",
+        "found": false,
+        "theatres": {}
     }
 ]
