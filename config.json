@@ -1,14 +1,5 @@
 [
     {
-        "name": "The Odyssey",
-        "slug_name": "the-odyssey",
-        "code": "ET00480917",
-        "city": "kochi",
-        "date": "20260816",
-        "found": false,
-        "theatres": {}
-    },
-    {
         "name": "Khalifa",
         "slug_name": "khalifa",
         "code": "ET00467751",
