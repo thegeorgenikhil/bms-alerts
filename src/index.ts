@@ -229,7 +229,7 @@ async function main() {
       const showDate = movie.date;
       const formattedDate = `${showDate.slice(6, 8)}-${showDate.slice(4, 6)}-${showDate.slice(0, 4)}`;
       const bookingKeyboard: TelegramKeyboard = {
-        inline_keyboard: [[{ text: "🎟️ Book Now", url: bookingURL }]],
+        inline_keyboard: [[{ text: "🎟️ Book on BookMyShow", url: bookingURL }]],
       };
 
       for (const theatre of scrapedTheatres) {
