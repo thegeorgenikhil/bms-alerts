@@ -1,5 +1,23 @@
 [
     {
+        "name": "Bethlehem Kudumba Unit",
+        "slug_name": "bethlehem-kudumba-unit",
+        "code": "ET00502829",
+        "city": "nooranad",
+        "date": "20260903",
+        "found": false,
+        "theatres": {}
+    },
+    {
+        "name": "I'm Game",
+        "slug_name": "im-game",
+        "code": "ET00473215",
+        "city": "kochi",
+        "date": "20260903",
+        "found": false,
+        "theatres": {}
+    },
+    {
         "name": "Avengers Endgame: Encore",
         "slug_name": "avengers-endgame-encore",
         "code": "ET00514163",
