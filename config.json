@@ -18,6 +18,15 @@
         "theatres": {}
     },
     {
+        "name": "Bethlehem Kudumba Unit",
+        "slug_name": "bethlehem-kudumba-unit",
+        "code": "ET00502829",
+        "city": "kochi",
+        "date": "20260904",
+        "found": false,
+        "theatres": {}
+    },
+    {
         "name": "Avengers Endgame: Encore",
         "slug_name": "avengers-endgame-encore",
         "code": "ET00514163",
