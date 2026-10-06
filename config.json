@@ -1,10 +1,19 @@
 [
     {
-        "name": "Avengers Endgame: Encore",
-        "slug_name": "avengers-endgame-encore",
-        "code": "ET00514163",
+        "name": "Jailer 2",
+        "slug_name": "jailer-2",
+        "code": "ET00518674",
         "city": "kochi",
-        "date": "20260925",
+        "date": "20261015",
+        "found": false,
+        "theatres": {}
+    },
+    {
+        "name": "Jailer 2",
+        "slug_name": "jailer-2",
+        "code": "ET00518674",
+        "city": "bengaluru",
+        "date": "20261015",
         "found": false,
         "theatres": {}
     }
