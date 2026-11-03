@@ -1,19 +1,10 @@
 [
     {
-        "name": "Jailer 2",
-        "slug_name": "jailer-2",
-        "code": "ET00518674",
+        "name": "Avengers: Doomsday",
+        "slug_name": "avengers-doomsday",
+        "code": "ET00439706",
         "city": "kochi",
-        "date": "20261015",
-        "found": false,
-        "theatres": {}
-    },
-    {
-        "name": "Jailer 2",
-        "slug_name": "jailer-2",
-        "code": "ET00518674",
-        "city": "bengaluru",
-        "date": "20261015",
+        "date": "20261217",
         "found": false,
         "theatres": {}
     }
