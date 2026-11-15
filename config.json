@@ -1,5 +1,14 @@
 [
     {
+        "name": "O.M Operation Mole",
+        "slug_name": "om-operation-mole",
+        "code": "ET00504901",
+        "city": "kochi",
+        "date": "20261120",
+        "found": false,
+        "theatres": {}
+    },
+    {
         "name": "Avengers: Doomsday",
         "slug_name": "avengers-doomsday",
         "code": "ET00439706",
