@@ -92,6 +92,7 @@ Movies are configured in `config.json`. Each movie entry contains:
     "code": "ET00XXXXX",
     "city": "city-name",
     "date": "YYYYMMDD",
+    "language": "english",
     "found": false,
     "theatres": {}
 }
@@ -118,23 +119,29 @@ https://in.bookmyshow.com/movies/kochi/prathichaya/ET00491497
 
 3. Add the `date` (YYYYMMDD format) for the show date you want to track.
 
-### IMAX Movies
+4. Add the `language` in lowercase, as BookMyShow spells it in the URL (`english`, `hindi`, `malayalam`, ...).
 
-For IMAX versions of a movie, append `-imax-2d` to the `slug_name`. The movie code remains the same — only the slug changes.
+### Formats (2D, 3D, IMAX, 4DX, ...)
 
-For example, for *Project Hail Mary* in Kochi:
-- Normal: `slug_name: "project-hail-mary"`
-- IMAX 2D: `slug_name: "project-hail-mary-imax-2d"`
+A movie code on its own only lists one format — e.g. the plain URL for an "English - 2D" code shows nothing when only IMAX or Infinity Vision shows are open. When `language` is set, the checker opens
 
 ```
-# Normal
-https://in.bookmyshow.com/movies/kochi/project-hail-mary/ET00481564
-
-# IMAX 2D
-https://in.bookmyshow.com/movies/kochi/project-hail-mary-imax-2d/ET00481564
+https://in.bookmyshow.com/movies/[city]/[slug_name]/buytickets/[code]/[date]?etCodes=*&language=[language]
 ```
 
-To track both versions, add two separate entries in `config.json` with the same `code` but different `slug_name` values.
+which lists every format of that language, so one entry covers all of them and any code of the movie works. Each format gets its own Telegram message, with the format in brackets after the movie name:
+
+```
+🎬 New Show Added!
+
+🎥 Movie: Ramayana (HINDI IMAX 3D)
+📅 Date: 17-11-2026
+🏟️ Theatre: Cinepolis: Centre Square, Kochi
+🕐 Shows: 4
+⏰ 11:30 AM IMAX, 03:35 PM IMAX, 07:40 PM IMAX, 11:45 PM IMAX
+```
+
+To track more than one language, add one entry per language. If `language` is omitted, only the default format of that `code` is checked and the message has no format after the movie name.
 
 ## Usage
 
@@ -152,3 +159,5 @@ The script will:
 - Send Telegram notifications when bookings open
 - Update the theatre list in `config.json`
 - Log all activities to `bms.log`
+
+To preview without sending anything, run `DRY_RUN=1 pnpm start`: notifications are printed to the terminal and `config.json` is left untouched.
