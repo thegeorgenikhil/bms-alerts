@@ -11,6 +11,15 @@
     {
         "name": "Avengers: Doomsday",
         "slug_name": "avengers-doomsday",
+        "code": "ET00526287",
+        "city": "kochi",
+        "date": "20261217",
+        "found": false,
+        "theatres": {}
+    },
+    {
+        "name": "Avengers: Doomsday",
+        "slug_name": "avengers-doomsday",
         "code": "ET00439706",
         "city": "kochi",
         "date": "20261217",
