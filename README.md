@@ -7,7 +7,7 @@ A TypeScript/Node.js scraper that monitors BookMyShow for when a new movie's boo
 Get notified when new movie bookings open up.
 
 The system:
-- Periodically checks BookMyShow for booking availability using cron
+- Checks BookMyShow for booking availability every few seconds, kept running by pm2
 - Sends immediate Telegram notifications when bookings open
 - Provides direct booking links in notifications
 - Supports multiple movies and cities through a simple JSON configuration
@@ -49,35 +49,15 @@ cp .env.example .env
 
 6. Configure movies in `config.json` (see [Configuration](#configuration))
 
-7. Set up a cron job:
+7. Install [pm2](https://pm2.keymetrics.io/) and deploy:
 ```bash
-crontab -e
+npm install -g pm2
+./deploy.sh
 ```
 
-Add one of the following lines depending on your desired frequency:
+`deploy.sh` installs dependencies, builds, and starts the watcher under pm2 as `bms-alerts` (or restarts it if it is already running). Run it again any time to redeploy.
 
-```bash
-# Every 1 minute
-* * * * * cd /path/to/bms-alerts && /bin/bash run.sh >> /path/to/bms-alerts/bms-cron-error.log 2>&1
-
-# Every 2 minutes
-*/2 * * * * cd /path/to/bms-alerts && /bin/bash run.sh >> /path/to/bms-alerts/bms-cron-error.log 2>&1
-
-# Every 5 minutes
-*/5 * * * * cd /path/to/bms-alerts && /bin/bash run.sh >> /path/to/bms-alerts/bms-cron-error.log 2>&1
-
-# Every 10 minutes
-*/10 * * * * cd /path/to/bms-alerts && /bin/bash run.sh >> /path/to/bms-alerts/bms-cron-error.log 2>&1
-
-# Every 15 minutes
-*/15 * * * * cd /path/to/bms-alerts && /bin/bash run.sh >> /path/to/bms-alerts/bms-cron-error.log 2>&1
-
-# Every 30 minutes
-*/30 * * * * cd /path/to/bms-alerts && /bin/bash run.sh >> /path/to/bms-alerts/bms-cron-error.log 2>&1
-
-# Every hour
-0 * * * * cd /path/to/bms-alerts && /bin/bash run.sh >> /path/to/bms-alerts/bms-cron-error.log 2>&1
-```
+To bring the watcher back after a reboot, run `pm2 startup` once and follow the command it prints.
 
 ## Configuration
 
@@ -145,19 +125,26 @@ To track more than one language, add one entry per language. If `language` is om
 
 ## Usage
 
-1. Configure your movies in `config.json`
-2. Make sure your `.env` file is properly configured
-3. Run the script:
 ```bash
-pnpm start
-# or
-./run.sh
+./deploy.sh              # deploy or redeploy
+pm2 status bms-alerts    # is it running?
+pm2 logs bms-alerts      # process output and crashes
+pm2 restart bms-alerts   # restart without rebuilding
+pm2 stop bms-alerts      # stop watching
 ```
 
-The script will:
-- Monitor each movie in the configuration
-- Send Telegram notifications when bookings open
-- Update the theatre list in `config.json`
-- Log all activities to `bms.log`
+Activity (new shows, errors, heartbeats) is logged to `bms.log`. Editing `config.json` needs no restart.
+
+## Watch mode
+
+pm2 runs `node dist/index.js --watch`:
+
+- One browser tab stays open on BookMyShow. Each check fetches the booking page's HTML from inside that tab and reads the showtimes BookMyShow server-renders into it, instead of rendering the page. All movies are checked in parallel; a full cycle takes well under a second.
+- Checks repeat every `POLL_INTERVAL_SECONDS` (default `5`, set it in `.env`, then run `./deploy.sh` or `pm2 restart bms-alerts --update-env`).
+- `config.json` is re-read every cycle, so you can add or remove movies without restarting.
+- `bms.log` only gets a line when something changes, plus a heartbeat every 10 minutes.
+- If checks keep failing (blocked, network down), it backs off, reopens the browser, and sends one Telegram warning after a few minutes of failures.
+
+`pnpm start` runs a single check and exits.
 
 To preview without sending anything, run `DRY_RUN=1 pnpm start`: notifications are printed to the terminal and `config.json` is left untouched.

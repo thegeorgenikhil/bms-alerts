@@ -2,12 +2,13 @@ import "dotenv/config";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import puppeteer from "puppeteer";
+import puppeteer, { type Browser, type Page } from "puppeteer";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, "..");
 
-const CONFIG_FILE = path.join(ROOT_DIR, "config.json");
+// CONFIG_FILE overrides the config path (handy for trying a test config).
+const CONFIG_FILE = process.env.CONFIG_FILE ?? path.join(ROOT_DIR, "config.json");
 const LOG_FILE = path.join(ROOT_DIR, "bms.log");
 
 interface MovieDetails {
@@ -36,6 +37,20 @@ interface ScrapedTheatre {
   shows: ScrapedShow[];
 }
 
+type CheckResult =
+  | { status: "open"; theatres: ScrapedTheatre[] }
+  // Shows haven't opened for the requested date (BMS fell back to
+  // `actualDate`, or lists no shows at all when it is null).
+  | { status: "not-open"; actualDate: string | null }
+  | { status: "error"; error: string; blocked?: boolean };
+
+interface FetchedPage {
+  status: number;
+  url: string;
+  body: string;
+  error: string;
+}
+
 interface TelegramKeyboard {
   inline_keyboard: { text: string; url: string }[][];
 }
@@ -45,6 +60,19 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 // DRY_RUN=1 prints notifications to stdout instead of sending them and
 // leaves config.json untouched.
 const DRY_RUN = process.env.DRY_RUN === "1";
+// --watch (or WATCH=1) keeps one browser open and re-checks every
+// POLL_INTERVAL_SECONDS instead of exiting after a single check.
+const WATCH = process.argv.includes("--watch") || process.env.WATCH === "1";
+const POLL_INTERVAL_MS = Math.max(1, Number(process.env.POLL_INTERVAL_SECONDS) || 5) * 1000;
+const FETCH_TIMEOUT_MS = 15000;
+const MAX_BACKOFF_MS = 60000;
+const HEARTBEAT_MS = 10 * 60 * 1000;
+// In watch mode, alert on Telegram once checks have been failing this long.
+const FAILURE_ALERT_MS = 3 * 60 * 1000;
+
+const BMS_ORIGIN = "https://in.bookmyshow.com";
+const USER_AGENT =
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 function cleanText(text: string) {
   return text.replace(/\s+/g, " ").trim();
@@ -150,7 +178,7 @@ async function sendTelegramNotification(
   keyboard: TelegramKeyboard
 ) {
   if (DRY_RUN) {
-    console.log(`--- DRY RUN notification ---\n${message}\n${keyboard.inline_keyboard[0][0].url}\n`);
+    console.log(`--- DRY RUN notification ---\n${message}\n${keyboard.inline_keyboard[0]?.[0]?.url ?? ""}\n`);
     return;
   }
   for (let attempt = 1; attempt <= TELEGRAM_MAX_ATTEMPTS; attempt++) {
@@ -169,9 +197,381 @@ async function sendTelegramNotification(
   }
 }
 
-async function main() {
-  const startTime = Date.now();
+function bookingPath(movie: MovieDetails) {
+  // Without etCodes=*, BMS only lists the default format of this event
+  // code (e.g. just "English - 2D") and hides IMAX/3D/4DX/etc.
+  // etCodes=* only works together with a language.
+  const allFormatsQuery = movie.language
+    ? `?etCodes=*&language=${encodeURIComponent(movie.language.toLowerCase())}`
+    : "";
+  return `/movies/${movie.city}/${movie.slug_name}/buytickets/${movie.code}/${movie.date}${allFormatsQuery}`;
+}
 
+// One long-lived browser tab on the BMS origin. Showtimes are read by
+// fetching the booking page's HTML from inside that tab (so the request
+// carries the browser's own cookies and network stack) instead of
+// rendering the page: BMS server-renders the showtime data into
+// window.__INITIAL_STATE__, which makes a check ~200ms instead of ~4s.
+//
+// The JSON API the page calls client-side
+// (/api/movies-data/v5/showtimes-by-event/primary-dynamic) is not used on
+// purpose: it is edge-cached and was observed serving responses over a
+// minute old, while the server-rendered HTML is generated per request.
+class BmsSession {
+  private browser: Browser | null = null;
+  private page: Page | null = null;
+
+  async open(city: string) {
+    await this.close();
+    this.browser = await puppeteer.launch({
+      headless: true,
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-blink-features=AutomationControlled",
+      ],
+    });
+    const page = await this.browser.newPage();
+    await page.setUserAgent(USER_AGENT);
+    // The tab only exists to give fetches a same-origin context.
+    await page.setRequestInterception(true);
+    page.on("request", (req) => {
+      const skip = ["image", "font", "media", "stylesheet"].includes(req.resourceType());
+      (skip ? req.abort() : req.continue()).catch(() => {});
+    });
+    await page.goto(`${BMS_ORIGIN}/explore/movies-${city}`, {
+      waitUntil: "domcontentloaded",
+      timeout: 60000,
+    });
+    this.page = page;
+  }
+
+  get isOpen() {
+    return this.page !== null && !this.page.isClosed() && this.browser?.connected === true;
+  }
+
+  // Fetches all paths in parallel. The callback declares no named helpers:
+  // tsx/esbuild wraps those in a `__name` call that doesn't exist inside
+  // the page.
+  async fetchAll(paths: string[]): Promise<FetchedPage[]> {
+    if (!this.page) throw new Error("BMS session is not open");
+    return this.page.evaluate(
+      (paths, timeoutMs) =>
+        Promise.all(
+          paths.map(async (path) => {
+            try {
+              const res = await fetch(path, {
+                cache: "no-store",
+                headers: { accept: "text/html" },
+                signal: AbortSignal.timeout(timeoutMs),
+              });
+              return { status: res.status, url: res.url, body: await res.text(), error: "" };
+            } catch (err) {
+              return { status: 0, url: "", body: "", error: String(err) };
+            }
+          })
+        ),
+      paths,
+      FETCH_TIMEOUT_MS
+    );
+  }
+
+  async close() {
+    const browser = this.browser;
+    this.browser = null;
+    this.page = null;
+    await browser?.close().catch(() => {});
+  }
+}
+
+const STATE_MARKER = "window.__INITIAL_STATE__ = ";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Json = any;
+
+function sectionFormat(section: Json): string {
+  const parts: string[] = [];
+  for (const line of section?.text ?? []) {
+    for (const component of line?.components ?? []) {
+      if (component?.text) parts.push(component.text);
+    }
+  }
+  return cleanText(parts.join(" ")).toUpperCase();
+}
+
+function parseShowtimes(fetched: FetchedPage, movie: MovieDetails): CheckResult {
+  if (fetched.error) return { status: "error", error: fetched.error };
+  if (fetched.status !== 200) {
+    return {
+      status: "error",
+      error: `HTTP ${fetched.status}`,
+      blocked: fetched.status === 403 || fetched.status === 429,
+    };
+  }
+
+  const start = fetched.body.indexOf(STATE_MARKER);
+  const end = start === -1 ? -1 : fetched.body.indexOf("</script>", start);
+  if (end === -1) return { status: "error", error: "Initial state not found in page" };
+
+  let state: Json;
+  try {
+    const raw = fetched.body.slice(start + STATE_MARKER.length, end).trim().replace(/;$/, "");
+    state = JSON.parse(raw);
+  } catch (err) {
+    return { status: "error", error: `Initial state is not valid JSON: ${String(err)}` };
+  }
+
+  const queries = state?.showtimesFunctionalApi?.queries ?? {};
+  const queryKey = Object.keys(queries).find((key) => key.startsWith("fetchPrimaryDynamic"));
+  const query = queryKey ? queries[queryKey] : undefined;
+  if (!query) return { status: "error", error: "Showtimes query missing from initial state" };
+  if (query.status !== "fulfilled") {
+    return { status: "error", error: `Showtimes query ${query.status}` };
+  }
+
+  const data = query.data?.data ?? {};
+
+  // BMS silently falls back to the nearest available date when shows
+  // haven't opened for the requested one.
+  const servedDate: string | null =
+    data.additionalData?.dateCode ?? fetched.url.match(/\/(\d{8})(?:[?#]|$)/)?.[1] ?? null;
+  if (servedDate && servedDate !== movie.date) {
+    return { status: "not-open", actualDate: servedDate };
+  }
+
+  const theatres: ScrapedTheatre[] = [];
+  for (const widget of data.showtimeWidgets ?? []) {
+    if (widget?.type !== "groupList") continue;
+    for (const group of widget.data ?? []) {
+      for (const venue of group?.data ?? []) {
+        if (venue?.type !== "venue-card") continue;
+        const shows: ScrapedShow[] = [];
+        for (const section of venue.showtimesSections ?? []) {
+          const format = sectionFormat(section);
+          for (const show of section?.showtimes ?? []) {
+            const time = cleanText(show?.title ?? "");
+            if (!time) continue;
+            // A show listed under another date doesn't count for this one.
+            const showDate = show.additionalData?.showDateCode;
+            if (showDate && showDate !== movie.date) continue;
+            const subtitle = cleanText(show.subtitleAcronym ?? "");
+            const tag = cleanText(show.screenAttr ?? "");
+            shows.push({
+              format,
+              timing: [time, subtitle && `(${subtitle})`, tag].filter(Boolean).join(" "),
+            });
+          }
+        }
+        theatres.push({ name: cleanText(venue.additionalData?.venueName ?? ""), shows });
+      }
+    }
+  }
+
+  if (!theatres.some((theatre) => theatre.name && theatre.shows.length > 0)) {
+    return { status: "not-open", actualDate: null };
+  }
+  return { status: "open", theatres };
+}
+
+// Sends alerts for shows not yet recorded on `movie` and records them.
+// Returns true when `movie` changed.
+async function notifyNewShows(movie: MovieDetails, theatres: ScrapedTheatre[], chatId: string) {
+  const showDate = movie.date;
+  const formattedDate = `${showDate.slice(6, 8)}-${showDate.slice(4, 6)}-${showDate.slice(0, 4)}`;
+  const bookingURL = BMS_ORIGIN + bookingPath(movie);
+  const bookingKeyboard: TelegramKeyboard = {
+    inline_keyboard: [[{ text: "🎟️ Book on BookMyShow", url: bookingURL }]],
+  };
+  let changed = false;
+
+  for (const theatre of theatres) {
+    if (!theatre.name) continue;
+
+    const existingShows = movie.theatres[theatre.name];
+    const isNewTheatre = existingShows === undefined;
+    const newShows = isNewTheatre
+      ? theatre.shows
+      : theatre.shows.filter((show) => !existingShows.includes(showKey(show)));
+
+    if (newShows.length === 0) continue;
+
+    movie.theatres[theatre.name] = [...(existingShows ?? []), ...newShows.map(showKey)];
+    changed = true;
+
+    // One message per format, with the format in brackets after the
+    // movie name, e.g. "Ramayana (HINDI IMAX 3D)".
+    for (const [format, timings] of groupByFormat(newShows)) {
+      const movieTitle = format ? `${movie.name} (${format})` : movie.name;
+      const header = `🎥 Movie: *${movieTitle}*\n📅 Date: *${formattedDate}*\n🏟️ Theatre: *${theatre.name}*`;
+      const notificationMsg = isNewTheatre
+        ? `🎬 *New Show Added!*\n\n${header}\n🕐 Shows: *${timings.length}*\n⏰ *${timings.join(", ")}*`
+        : `🎬 *New Timing Added!*\n\n${header}\n⏰ New: *${timings.join(", ")}*`;
+
+      try {
+        await sendTelegramNotification(chatId, notificationMsg, "Markdown", bookingKeyboard);
+      } catch (err) {
+        log("error", "Error sending Telegram notification", {
+          movie: movie.name, theatre: theatre.name, format, ...describeError(err),
+        });
+      }
+    }
+
+    log("info", isNewTheatre ? "Found new theatre" : "Found new timings", {
+      movie: movie.name, date: formattedDate, theatre: theatre.name,
+      shows: newShows.map(showKey), url: bookingURL,
+    });
+  }
+
+  return changed;
+}
+
+// Last logged outcome per target, so watch mode logs changes rather than
+// the same "not yet available" line every few seconds.
+const lastOutcome = new Map<string, string>();
+
+function logOutcome(movie: MovieDetails, result: CheckResult) {
+  const target = `${movie.code}|${movie.city}|${movie.date}|${movie.language ?? ""}`;
+  const outcome = JSON.stringify(result.status === "open" ? { status: "open" } : result);
+  if (lastOutcome.get(target) === outcome) return;
+  lastOutcome.set(target, outcome);
+
+  const fields = { movie: movie.name, city: movie.city, requestedDate: movie.date };
+  if (result.status === "not-open") {
+    log("info", "Shows not yet available for requested date", {
+      ...fields, actualDate: result.actualDate,
+    });
+  } else if (result.status === "error") {
+    log("error", "Error checking movie", { ...fields, error: result.error });
+  }
+}
+
+interface CycleResult {
+  checked: number;
+  failed: number;
+  blocked: boolean;
+}
+
+// Checks every pending movie once, all in parallel.
+async function runCycle(session: BmsSession, chatId: string): Promise<CycleResult> {
+  const moviesList = loadMovies();
+  const pending = moviesList.filter((movie) => !movie.found);
+  if (pending.length === 0) return { checked: 0, failed: 0, blocked: false };
+
+  if (!session.isOpen) await session.open(pending[0].city);
+
+  const pages = await session.fetchAll(pending.map(bookingPath));
+  const results = pages.map((page, i) => parseShowtimes(page, pending[i]));
+
+  let changed = false;
+  let failed = 0;
+  let blocked = false;
+  for (const [i, result] of results.entries()) {
+    const movie = pending[i];
+    logOutcome(movie, result);
+    if (result.status === "error") {
+      failed++;
+      blocked ||= result.blocked === true;
+    } else if (result.status === "open") {
+      if (await notifyNewShows(movie, result.theatres, chatId)) changed = true;
+    }
+  }
+
+  if (changed && !DRY_RUN) saveMovies(moviesList);
+  return { checked: pending.length, failed, blocked };
+}
+
+async function runOnce(chatId: string) {
+  const startTime = Date.now();
+  const session = new BmsSession();
+  try {
+    await runCycle(session, chatId);
+  } catch (err) {
+    log("error", "Error running check", describeError(err));
+  } finally {
+    await session.close();
+  }
+  log("info", "check completed", { duration_in_seconds: (Date.now() - startTime) / 1000 });
+}
+
+async function watch(chatId: string) {
+  const session = new BmsSession();
+  let stopping = false;
+  const stop = () => {
+    stopping = true;
+  };
+  process.on("SIGINT", stop);
+  process.on("SIGTERM", stop);
+
+  log("info", "watch started", { poll_interval_seconds: POLL_INTERVAL_MS / 1000 });
+
+  let consecutiveFailures = 0;
+  let failingSince: number | null = null;
+  let failureAlertSent = false;
+  let cycles = 0;
+  let cycleMsTotal = 0;
+  let lastHeartbeat = Date.now();
+  const stats = () => ({
+    cycles, avg_cycle_ms: cycles ? Math.round(cycleMsTotal / cycles) : 0, consecutiveFailures,
+  });
+
+  while (!stopping) {
+    const cycleStart = Date.now();
+    let ok = false;
+    try {
+      const result = await runCycle(session, chatId);
+      // A cycle is healthy unless every check failed.
+      ok = result.checked === 0 || result.failed < result.checked;
+      if (result.blocked) await session.close();
+    } catch (err) {
+      log("error", "Error running check", describeError(err));
+      await session.close();
+    }
+    cycles++;
+    cycleMsTotal += Date.now() - cycleStart;
+
+    if (ok) {
+      if (failureAlertSent) {
+        await sendTelegramNotification(chatId, "✅ BMS watcher recovered.", "Markdown", {
+          inline_keyboard: [],
+        }).catch(() => {});
+      }
+      consecutiveFailures = 0;
+      failingSince = null;
+      failureAlertSent = false;
+    } else {
+      consecutiveFailures++;
+      failingSince ??= cycleStart;
+      // A fresh tab (and browser) is the fix for most failures.
+      if (consecutiveFailures % 3 === 0) await session.close();
+      if (!failureAlertSent && Date.now() - failingSince >= FAILURE_ALERT_MS) {
+        failureAlertSent = true;
+        await sendTelegramNotification(
+          chatId,
+          "⚠️ BMS watcher has been failing for a few minutes. Check bms.log.",
+          "Markdown",
+          { inline_keyboard: [] }
+        ).catch(() => {});
+      }
+    }
+
+    if (Date.now() - lastHeartbeat >= HEARTBEAT_MS) {
+      log("info", "watch heartbeat", stats());
+      cycles = 0;
+      cycleMsTotal = 0;
+      lastHeartbeat = Date.now();
+    }
+
+    const backoff = ok ? 0 : Math.min(MAX_BACKOFF_MS, POLL_INTERVAL_MS * 2 ** Math.min(consecutiveFailures, 6));
+    const wait = Math.max(POLL_INTERVAL_MS - (Date.now() - cycleStart), backoff);
+    const waitUntil = Date.now() + wait;
+    while (!stopping && Date.now() < waitUntil) await sleep(Math.min(250, waitUntil - Date.now()));
+  }
+
+  await session.close();
+  log("info", "watch stopped", stats());
+}
+
+async function main() {
   if (!TELEGRAM_BOT_TOKEN && !DRY_RUN) {
     log("error", "TELEGRAM_BOT_TOKEN environment variable not set");
     process.exit(1);
@@ -182,183 +582,8 @@ async function main() {
   }
 
   const chatId = TELEGRAM_CHAT_ID ?? "";
-  const moviesList = loadMovies();
-
-  for (const movie of moviesList) {
-    if (movie.found) continue;
-
-    const browser = await puppeteer.launch({
-      headless: true,
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-blink-features=AutomationControlled",
-      ],
-    });
-
-    try {
-      const page = await browser.newPage();
-      await page.setUserAgent(
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-      );
-
-      // Without etCodes=*, BMS only lists the default format of this event
-      // code (e.g. just "English - 2D") and hides IMAX/3D/4DX/etc.
-      // etCodes=* only works together with a language.
-      const allFormatsQuery = movie.language
-        ? `?etCodes=*&language=${encodeURIComponent(movie.language.toLowerCase())}`
-        : "";
-      const bookingURL = `https://in.bookmyshow.com/movies/${movie.city}/${movie.slug_name}/buytickets/${movie.code}/${movie.date}${allFormatsQuery}`;
-
-      await page.goto(bookingURL, { waitUntil: "networkidle2", timeout: 60000 });
-      await page.waitForNetworkIdle({ timeout: 10000 }).catch(() => {});
-
-      // Verify the actually selected date matches the requested date.
-      // BMS silently defaults to the nearest available date if shows
-      // haven't opened for the requested date.
-      const actualSelectedDate = await page.evaluate(() => {
-        const els = document.querySelectorAll<HTMLElement>("[id]");
-        for (const el of els) {
-          if (/^\d{8}$/.test(el.id)) {
-            const bg = window.getComputedStyle(el).backgroundColor;
-            if (bg === "rgb(235, 78, 98)") return el.id; // #EB4E62
-          }
-        }
-        return null;
-      });
-
-      // BMS also rewrites the URL to the date it fell back to.
-      const urlDate = page.url().match(/\/(\d{8})(?:[?#]|$)/)?.[1] ?? null;
-      const actualDate =
-        actualSelectedDate && actualSelectedDate !== movie.date
-          ? actualSelectedDate
-          : urlDate && urlDate !== movie.date
-            ? urlDate
-            : null;
-
-      if (actualDate) {
-        log("info", "Shows not yet available for requested date", {
-          movie: movie.name,
-          requestedDate: movie.date,
-          actualDate,
-        });
-        continue;
-      }
-
-      const theatreContainer = await page.$(
-        ".ReactVirtualized__Grid__innerScrollContainer"
-      );
-      if (!theatreContainer) {
-        log("error", "Error finding theatre container", { movie: movie.name });
-        continue;
-      }
-
-      // Only use the stable styled-components prefix classes (sc-*); the
-      // hashed companion classes (e.g. "kJBeM") change between BMS builds.
-      //
-      // Each theatre card holds one group (.sc-y0qrj4-1) per format, with an
-      // optional heading (.sc-y0qrj4-2, e.g. "Hindi IMAX 3D") that BMS only
-      // renders in the all-formats view.
-      //
-      // The browser callback returns raw text only and declares no named
-      // helpers: tsx/esbuild wraps those in a `__name` call that doesn't
-      // exist inside the page.
-      const rawTheatres = await theatreContainer.$$eval(".sc-e8nk8f-3", (theatreEls) =>
-        theatreEls.map((theatreEl) => ({
-          // First match is the theatre name; format headings reuse the class.
-          name: theatreEl.querySelector(".sc-1h5m8q1-2")?.textContent || "",
-          slots: [...theatreEl.querySelectorAll(".sc-1la7659-0")].map((slot) => {
-            const timeEl = slot.querySelector(".sc-1vhizuf-2");
-            return {
-              format:
-                slot.closest(".sc-y0qrj4-1")?.querySelector(".sc-y0qrj4-2")?.textContent || "",
-              // The time element also nests the subtitle badge (e.g. "ENG"),
-              // so read only its own text nodes for the time.
-              time: [...(timeEl?.childNodes ?? [])]
-                .filter((n) => n.nodeType === Node.TEXT_NODE)
-                .map((n) => n.textContent)
-                .join(" "),
-              subtitle: timeEl?.querySelector(".sc-1vhizuf-4")?.textContent || "",
-              tag: slot.querySelector(".sc-1vhizuf-3")?.textContent || "",
-            };
-          }),
-        }))
-      );
-
-      const scrapedTheatres: ScrapedTheatre[] = rawTheatres.map((theatre) => ({
-        name: cleanText(theatre.name),
-        shows: theatre.slots
-          .filter((slot) => cleanText(slot.time))
-          .map((slot) => {
-            const subtitle = cleanText(slot.subtitle);
-            return {
-              format: cleanText(slot.format).toUpperCase(),
-              timing: [cleanText(slot.time), subtitle && `(${subtitle})`, cleanText(slot.tag)]
-                .filter(Boolean)
-                .join(" "),
-            };
-          }),
-      }));
-
-      const showDate = movie.date;
-      const formattedDate = `${showDate.slice(6, 8)}-${showDate.slice(4, 6)}-${showDate.slice(0, 4)}`;
-      const bookingKeyboard: TelegramKeyboard = {
-        inline_keyboard: [[{ text: "🎟️ Book on BookMyShow", url: bookingURL }]],
-      };
-
-      for (const theatre of scrapedTheatres) {
-        if (!theatre.name) continue;
-
-        const existingShows = movie.theatres[theatre.name];
-        const isNewTheatre = existingShows === undefined;
-        const newShows = isNewTheatre
-          ? theatre.shows
-          : theatre.shows.filter((show) => !existingShows.includes(showKey(show)));
-
-        if (!isNewTheatre && newShows.length === 0) continue;
-
-        movie.theatres[theatre.name] = [
-          ...(existingShows ?? []),
-          ...newShows.map(showKey),
-        ];
-
-        // One message per format, with the format in brackets after the
-        // movie name, e.g. "Ramayana (HINDI IMAX 3D)".
-        for (const [format, timings] of groupByFormat(newShows)) {
-          const movieTitle = format ? `${movie.name} (${format})` : movie.name;
-          const header = `🎥 Movie: *${movieTitle}*\n📅 Date: *${formattedDate}*\n🏟️ Theatre: *${theatre.name}*`;
-          const notificationMsg = isNewTheatre
-            ? `🎬 *New Show Added!*\n\n${header}\n🕐 Shows: *${timings.length}*\n⏰ *${timings.join(", ")}*`
-            : `🎬 *New Timing Added!*\n\n${header}\n⏰ New: *${timings.join(", ")}*`;
-
-          try {
-            await sendTelegramNotification(chatId, notificationMsg, "Markdown", bookingKeyboard);
-          } catch (err) {
-            log("error", "Error sending Telegram notification", {
-              movie: movie.name, theatre: theatre.name, format, ...describeError(err),
-            });
-          }
-        }
-
-        log("info", isNewTheatre ? "Found new theatre" : "Found new timings", {
-          movie: movie.name, date: formattedDate, theatre: theatre.name,
-          shows: newShows.map(showKey), url: bookingURL,
-        });
-      }
-    } catch (err) {
-      log("error", "Error processing movie", {
-        movie: movie.name,
-        error: String(err),
-      });
-    } finally {
-      await browser.close();
-    }
-  }
-
-  if (!DRY_RUN) saveMovies(moviesList);
-
-  const duration = (Date.now() - startTime) / 1000;
-  log("info", "cron completed", { duration_in_seconds: duration });
+  if (WATCH) await watch(chatId);
+  else await runOnce(chatId);
 }
 
 main().catch((err) => {
