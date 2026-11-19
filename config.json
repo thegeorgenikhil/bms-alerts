@@ -1,12 +1,42 @@
 [
-  {
-    "name": "Avengers: Doomsday",
-    "slug_name": "avengers-doomsday",
-    "code": "ET00439706",
-    "city": "kochi",
-    "date": "20261217",
-    "language": "english",
-    "found": false,
-    "theatres": {}
-  }
+    {
+        "name": "Dune: Part Three",
+        "slug_name": "dune-part-three",
+        "code": "ET00491771",
+        "city": "coimbatore",
+        "date": "20261218",
+        "language": "english",
+        "found": false,
+        "theatres": {}
+    },
+    {
+        "name": "Dune: Part Three",
+        "slug_name": "dune-part-three",
+        "code": "ET00491771",
+        "city": "coimbatore",
+        "date": "20261215",
+        "language": "english",
+        "found": false,
+        "theatres": {}
+    },
+    {
+        "name": "Dune: Part Three",
+        "slug_name": "dune-part-three",
+        "code": "ET00491771",
+        "city": "kochi",
+        "date": "20261218",
+        "language": "english",
+        "found": false,
+        "theatres": {}
+    },
+    {
+        "name": "Dune: Part Three",
+        "slug_name": "dune-part-three",
+        "code": "ET00491771",
+        "city": "kochi",
+        "date": "20261215",
+        "language": "english",
+        "found": false,
+        "theatres": {}
+    }
 ]
