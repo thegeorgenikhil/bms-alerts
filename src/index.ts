@@ -29,7 +29,13 @@ interface MovieDetails {
 
 interface ScrapedShow {
   format: string;
+  // Full label used in messages and as the stored key, e.g. "06:50 AM (ENG) PXL".
   timing: string;
+  // Bare show time, e.g. "06:50 AM".
+  time: string;
+  // Seat selection page of this show (the booking page when unknown).
+  url: string;
+  soldOut: boolean;
 }
 
 interface ScrapedTheatre {
@@ -49,6 +55,7 @@ interface FetchedPage {
   url: string;
   body: string;
   error: string;
+  ms: number;
 }
 
 interface TelegramKeyboard {
@@ -63,6 +70,9 @@ const DRY_RUN = process.env.DRY_RUN === "1";
 // --watch (or WATCH=1) keeps one browser open and re-checks every
 // POLL_INTERVAL_SECONDS instead of exiting after a single check.
 const WATCH = process.argv.includes("--watch") || process.env.WATCH === "1";
+// VERBOSE=1 echoes every log line to the terminal and adds per-check
+// debug lines (terminal only, so bms.log doesn't fill up).
+const VERBOSE = process.env.VERBOSE === "1";
 const POLL_INTERVAL_MS = Math.max(1, Number(process.env.POLL_INTERVAL_SECONDS) || 5) * 1000;
 const FETCH_TIMEOUT_MS = 15000;
 const MAX_BACKOFF_MS = 60000;
@@ -84,20 +94,44 @@ function showKey(show: ScrapedShow) {
 
 // Groups shows by format, preserving page order.
 function groupByFormat(shows: ScrapedShow[]) {
-  const byFormat = new Map<string, string[]>();
+  const byFormat = new Map<string, ScrapedShow[]>();
   for (const show of shows) {
-    const timings = byFormat.get(show.format) ?? [];
-    timings.push(show.timing);
-    byFormat.set(show.format, timings);
+    const group = byFormat.get(show.format) ?? [];
+    group.push(show);
+    byFormat.set(show.format, group);
   }
   return byFormat;
+}
+
+const SHOW_BUTTONS_PER_ROW = 3;
+// Telegram allows 100 buttons per message; leave room for the last row.
+const MAX_SHOW_BUTTONS = 96;
+
+// One button per show, opening that show's seat selection, followed by a
+// button for the movie's booking page.
+function showKeyboard(shows: ScrapedShow[], bookingURL: string): TelegramKeyboard {
+  const rows: TelegramKeyboard["inline_keyboard"] = [];
+  for (const [i, show] of shows.slice(0, MAX_SHOW_BUTTONS).entries()) {
+    if (i % SHOW_BUTTONS_PER_ROW === 0) rows.push([]);
+    rows[rows.length - 1].push({
+      text: show.soldOut ? `${show.time} (sold out)` : show.time,
+      url: show.url,
+    });
+  }
+  rows.push([{ text: "🎟️ All shows on BookMyShow", url: bookingURL }]);
+  return { inline_keyboard: rows };
 }
 
 function log(level: string, message: string, fields?: Record<string, unknown>) {
   const timestamp = new Date().toISOString();
   const fieldsStr = fields ? " " + JSON.stringify(fields) : "";
   const line = `${timestamp} [${level}] ${message}${fieldsStr}\n`;
-  fs.appendFileSync(LOG_FILE, line);
+  if (VERBOSE) process.stdout.write(line);
+  if (level !== "debug") fs.appendFileSync(LOG_FILE, line);
+}
+
+function debug(message: string, fields?: Record<string, unknown>) {
+  if (VERBOSE) log("debug", message, fields);
 }
 
 function loadMovies(): MovieDetails[] {
@@ -178,7 +212,10 @@ async function sendTelegramNotification(
   keyboard: TelegramKeyboard
 ) {
   if (DRY_RUN) {
-    console.log(`--- DRY RUN notification ---\n${message}\n${keyboard.inline_keyboard[0]?.[0]?.url ?? ""}\n`);
+    const buttons = keyboard.inline_keyboard
+      .map((row) => row.map((button) => `[${button.text}] ${button.url}`).join("\n"))
+      .join("\n");
+    console.log(`--- DRY RUN notification ---\n${message}\n${buttons}\n`);
     return;
   }
   for (let attempt = 1; attempt <= TELEGRAM_MAX_ATTEMPTS; attempt++) {
@@ -225,6 +262,11 @@ class BmsSession {
     await this.close();
     this.browser = await puppeteer.launch({
       headless: true,
+      // Watch mode handles these itself so it can stop cleanly; puppeteer's
+      // own handlers would exit the process mid-cycle.
+      handleSIGINT: !WATCH,
+      handleSIGTERM: !WATCH,
+      handleSIGHUP: !WATCH,
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
@@ -259,15 +301,19 @@ class BmsSession {
       (paths, timeoutMs) =>
         Promise.all(
           paths.map(async (path) => {
+            const started = performance.now();
             try {
               const res = await fetch(path, {
                 cache: "no-store",
                 headers: { accept: "text/html" },
                 signal: AbortSignal.timeout(timeoutMs),
               });
-              return { status: res.status, url: res.url, body: await res.text(), error: "" };
+              const body = await res.text();
+              const ms = Math.round(performance.now() - started);
+              return { status: res.status, url: res.url, body, error: "", ms };
             } catch (err) {
-              return { status: 0, url: "", body: "", error: String(err) };
+              const ms = Math.round(performance.now() - started);
+              return { status: 0, url: "", body: "", error: String(err), ms };
             }
           })
         ),
@@ -346,8 +392,11 @@ function parseShowtimes(fetched: FetchedPage, movie: MovieDetails): CheckResult 
       for (const venue of group?.data ?? []) {
         if (venue?.type !== "venue-card") continue;
         const shows: ScrapedShow[] = [];
+        const venueCode: string = venue.additionalData?.venueCode ?? "";
         for (const section of venue.showtimesSections ?? []) {
           const format = sectionFormat(section);
+          // In the all-formats view each format is its own event code.
+          const eventCode: string = section?.additionalData?.eventCode ?? movie.code;
           for (const show of section?.showtimes ?? []) {
             const time = cleanText(show?.title ?? "");
             if (!time) continue;
@@ -356,9 +405,16 @@ function parseShowtimes(fetched: FetchedPage, movie: MovieDetails): CheckResult 
             if (showDate && showDate !== movie.date) continue;
             const subtitle = cleanText(show.subtitleAcronym ?? "");
             const tag = cleanText(show.screenAttr ?? "");
+            const sessionId: string = show.additionalData?.sessionId ?? "";
             shows.push({
               format,
               timing: [time, subtitle && `(${subtitle})`, tag].filter(Boolean).join(" "),
+              time,
+              url:
+                venueCode && sessionId
+                  ? `${BMS_ORIGIN}/movies/${movie.city}/seat-layout/${eventCode}/${venueCode}/${sessionId}/${movie.date}`
+                  : BMS_ORIGIN + bookingPath(movie),
+              soldOut: show.additionalData?.availStatus === "0",
             });
           }
         }
@@ -379,9 +435,6 @@ async function notifyNewShows(movie: MovieDetails, theatres: ScrapedTheatre[], c
   const showDate = movie.date;
   const formattedDate = `${showDate.slice(6, 8)}-${showDate.slice(4, 6)}-${showDate.slice(0, 4)}`;
   const bookingURL = BMS_ORIGIN + bookingPath(movie);
-  const bookingKeyboard: TelegramKeyboard = {
-    inline_keyboard: [[{ text: "🎟️ Book on BookMyShow", url: bookingURL }]],
-  };
   let changed = false;
 
   for (const theatre of theatres) {
@@ -400,7 +453,8 @@ async function notifyNewShows(movie: MovieDetails, theatres: ScrapedTheatre[], c
 
     // One message per format, with the format in brackets after the
     // movie name, e.g. "Ramayana (HINDI IMAX 3D)".
-    for (const [format, timings] of groupByFormat(newShows)) {
+    for (const [format, shows] of groupByFormat(newShows)) {
+      const timings = shows.map((show) => show.timing);
       const movieTitle = format ? `${movie.name} (${format})` : movie.name;
       const header = `🎥 Movie: *${movieTitle}*\n📅 Date: *${formattedDate}*\n🏟️ Theatre: *${theatre.name}*`;
       const notificationMsg = isNewTheatre
@@ -408,7 +462,9 @@ async function notifyNewShows(movie: MovieDetails, theatres: ScrapedTheatre[], c
         : `🎬 *New Timing Added!*\n\n${header}\n⏰ New: *${timings.join(", ")}*`;
 
       try {
-        await sendTelegramNotification(chatId, notificationMsg, "Markdown", bookingKeyboard);
+        await sendTelegramNotification(
+          chatId, notificationMsg, "Markdown", showKeyboard(shows, bookingURL)
+        );
       } catch (err) {
         log("error", "Error sending Telegram notification", {
           movie: movie.name, theatre: theatre.name, format, ...describeError(err),
@@ -455,9 +511,16 @@ interface CycleResult {
 async function runCycle(session: BmsSession, chatId: string): Promise<CycleResult> {
   const moviesList = loadMovies();
   const pending = moviesList.filter((movie) => !movie.found);
-  if (pending.length === 0) return { checked: 0, failed: 0, blocked: false };
+  if (pending.length === 0) {
+    debug("No pending movies in config");
+    return { checked: 0, failed: 0, blocked: false };
+  }
 
-  if (!session.isOpen) await session.open(pending[0].city);
+  const cycleStart = Date.now();
+  if (!session.isOpen) {
+    await session.open(pending[0].city);
+    debug("Browser session opened", { ms: Date.now() - cycleStart });
+  }
 
   const pages = await session.fetchAll(pending.map(bookingPath));
   const results = pages.map((page, i) => parseShowtimes(page, pending[i]));
@@ -468,6 +531,17 @@ async function runCycle(session: BmsSession, chatId: string): Promise<CycleResul
   for (const [i, result] of results.entries()) {
     const movie = pending[i];
     logOutcome(movie, result);
+    debug("Checked", {
+      movie: movie.name, city: movie.city, date: movie.date,
+      result: result.status,
+      ...(result.status === "open" && {
+        theatres: result.theatres.length,
+        shows: result.theatres.reduce((n, theatre) => n + theatre.shows.length, 0),
+      }),
+      ...(result.status === "not-open" && { actualDate: result.actualDate }),
+      ...(result.status === "error" && { error: result.error }),
+      http: pages[i].status, kb: Math.round(pages[i].body.length / 1024), ms: pages[i].ms,
+    });
     if (result.status === "error") {
       failed++;
       blocked ||= result.blocked === true;
@@ -477,6 +551,7 @@ async function runCycle(session: BmsSession, chatId: string): Promise<CycleResul
   }
 
   if (changed && !DRY_RUN) saveMovies(moviesList);
+  debug("Cycle done", { checked: pending.length, failed, changed, ms: Date.now() - cycleStart });
   return { checked: pending.length, failed, blocked };
 }
 
@@ -561,6 +636,7 @@ async function watch(chatId: string) {
       lastHeartbeat = Date.now();
     }
 
+    if (!ok) debug("Cycle failed, backing off", { consecutiveFailures });
     const backoff = ok ? 0 : Math.min(MAX_BACKOFF_MS, POLL_INTERVAL_MS * 2 ** Math.min(consecutiveFailures, 6));
     const wait = Math.max(POLL_INTERVAL_MS - (Date.now() - cycleStart), backoff);
     const waitUntil = Date.now() + wait;

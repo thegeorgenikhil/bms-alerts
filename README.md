@@ -121,6 +121,8 @@ which lists every format of that language, so one entry covers all of them and a
 ⏰ 11:30 AM IMAX, 03:35 PM IMAX, 07:40 PM IMAX, 11:45 PM IMAX
 ```
 
+Under each message there is one button per show time, which opens the seat selection for that show directly, and a last button for the full show list.
+
 To track more than one language, add one entry per language. If `language` is omitted, only the default format of that `code` is checked and the message has no format after the movie name.
 
 ## Usage
@@ -145,6 +147,18 @@ pm2 runs `node dist/index.js --watch`:
 - `bms.log` only gets a line when something changes, plus a heartbeat every 10 minutes.
 - If checks keep failing (blocked, network down), it backs off, reopens the browser, and sends one Telegram warning after a few minutes of failures.
 
-`pnpm start` runs a single check and exits.
+### Running without pm2
+
+For testing, `run.sh` runs the watcher in the foreground (Ctrl+C to stop). It runs the existing build, so run `pnpm build` first after changing the code:
+
+```bash
+./run.sh              # watch mode, same as the pm2 process
+./run.sh --once       # a single check, then exit
+DRY_RUN=1 ./run.sh    # print alerts instead of sending them
+```
+
+`run.sh` sets `VERBOSE=1`: every log line is printed to the terminal, plus a debug line per check (result, HTTP status, size, time) and per cycle. Debug lines are not written to `bms.log`. Use `VERBOSE=0 ./run.sh` to turn it off.
+
+Stop the pm2 process first (`pm2 stop bms-alerts`) unless you are using `DRY_RUN=1`, or you will get duplicate alerts.
 
 To preview without sending anything, run `DRY_RUN=1 pnpm start`: notifications are printed to the terminal and `config.json` is left untouched.
