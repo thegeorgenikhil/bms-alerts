@@ -7,7 +7,7 @@ A TypeScript/Node.js scraper that monitors BookMyShow for when a new movie's boo
 Get notified when new movie bookings open up.
 
 The system:
-- Checks BookMyShow for booking availability every few seconds, kept running by pm2
+- Checks BookMyShow for booking availability every 30 seconds, kept running by pm2
 - Sends immediate Telegram notifications when bookings open
 - Provides direct booking links in notifications
 - Supports multiple movies and cities through a simple JSON configuration
@@ -71,12 +71,14 @@ Movies are configured in `config.json`. Each movie entry contains:
     "slug_name": "movie-name-slug",
     "code": "ET00XXXXX",
     "city": "city-name",
-    "date": "YYYYMMDD",
+    "dates": ["YYYY-MM-DD", "YYYY-MM-DD"],
     "language": "english",
     "found": false,
     "theatres": {}
 }
 ```
+
+`dates` lists every show date to watch for that movie and city; each date is checked separately. `theatres` is filled in by the watcher with the shows it has already alerted for, grouped by date. Leave it as `{}` for a new entry.
 
 ### How to Add New Movies
 
@@ -97,7 +99,7 @@ https://in.bookmyshow.com/movies/kochi/prathichaya/ET00491497
 - code: ET00491497
 ```
 
-3. Add the `date` (YYYYMMDD format) for the show date you want to track.
+3. Add the show dates you want to track to `dates` (YYYY-MM-DD format).
 
 4. Add the `language` in lowercase, as BookMyShow spells it in the URL (`english`, `hindi`, `malayalam`, ...).
 
@@ -142,7 +144,7 @@ Activity (new shows, errors, heartbeats) is logged to `bms.log`. Editing `config
 pm2 runs `node dist/index.js --watch`:
 
 - One browser tab stays open on BookMyShow. Each check fetches the booking page's HTML from inside that tab and reads the showtimes BookMyShow server-renders into it, instead of rendering the page. All movies are checked in parallel; a full cycle takes well under a second.
-- Checks repeat every `POLL_INTERVAL_SECONDS` (default `5`, set it in `.env`, then run `./deploy.sh` or `pm2 restart bms-alerts --update-env`).
+- Checks repeat every `POLL_INTERVAL_SECONDS` (default `30`, set it in `.env`, then run `./deploy.sh` or `pm2 restart bms-alerts --update-env`).
 - `config.json` is re-read every cycle, so you can add or remove movies without restarting.
 - `bms.log` only gets a line when something changes, plus a heartbeat every 10 minutes.
 - If checks keep failing (blocked, network down), it backs off, reopens the browser, and sends one Telegram warning after a few minutes of failures.

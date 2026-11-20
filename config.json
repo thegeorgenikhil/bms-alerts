@@ -1,42 +1,42 @@
 [
-    {
-        "name": "Dune: Part Three",
-        "slug_name": "dune-part-three",
-        "code": "ET00491771",
-        "city": "coimbatore",
-        "date": "20261218",
-        "language": "english",
-        "found": false,
-        "theatres": {}
-    },
-    {
-        "name": "Dune: Part Three",
-        "slug_name": "dune-part-three",
-        "code": "ET00491771",
-        "city": "coimbatore",
-        "date": "20261215",
-        "language": "english",
-        "found": false,
-        "theatres": {}
-    },
-    {
-        "name": "Dune: Part Three",
-        "slug_name": "dune-part-three",
-        "code": "ET00491771",
-        "city": "kochi",
-        "date": "20261218",
-        "language": "english",
-        "found": false,
-        "theatres": {}
-    },
-    {
-        "name": "Dune: Part Three",
-        "slug_name": "dune-part-three",
-        "code": "ET00491771",
-        "city": "kochi",
-        "date": "20261215",
-        "language": "english",
-        "found": false,
-        "theatres": {}
-    }
+  {
+    "name": "Dune: Part Three",
+    "slug_name": "dune-part-three",
+    "code": "ET00491771",
+    "city": "coimbatore",
+    "dates": ["2026-12-16", "2026-12-18"],
+    "language": "english",
+    "found": false,
+    "theatres": {}
+  },
+  {
+    "name": "Dune: Part Three",
+    "slug_name": "dune-part-three",
+    "code": "ET00491771",
+    "city": "kochi",
+    "dates": ["2026-12-16", "2026-12-18", "2026-12-19", "2026-12-20"],
+    "language": "english",
+    "found": false,
+    "theatres": {}
+  },
+  {
+    "name": "Dune",
+    "slug_name": "dune",
+    "code": "ET00122526",
+    "city": "kochi",
+    "dates": ["2026-12-04", "2026-12-05", "2026-12-06"],
+    "language": "english",
+    "found": false,
+    "theatres": {}
+  },
+  {
+    "name": "Dune: Part Two",
+    "slug_name": "dune-part-two",
+    "code": "ET00331567",
+    "city": "kochi",
+    "dates": ["2026-12-04", "2026-12-05", "2026-12-06"],
+    "language": "english",
+    "found": false,
+    "theatres": {}
+  }
 ]

@@ -11,11 +11,27 @@ const ROOT_DIR = path.resolve(__dirname, "..");
 const CONFIG_FILE = process.env.CONFIG_FILE ?? path.join(ROOT_DIR, "config.json");
 const LOG_FILE = path.join(ROOT_DIR, "bms.log");
 
+// One entry of config.json: a movie in a city, watched on one or more dates.
+interface MovieConfig {
+  name: string;
+  slug_name: string;
+  code: string;
+  city: string;
+  // Show dates to watch, as "YYYY-MM-DD" (or "YYYYMMDD").
+  dates: string[];
+  language?: string;
+  found: boolean;
+  // date (as written in `dates`) -> theatre name -> known shows.
+  theatres: Record<string, Record<string, string[]>>;
+}
+
+// One date of a config entry: the unit that is fetched and checked.
 interface MovieDetails {
   name: string;
   slug_name: string;
   code: string;
   city: string;
+  // Always "YYYYMMDD", as BMS uses it in URLs.
   date: string;
   // Lowercase language as BMS spells it in the URL (e.g. "english", "hindi").
   // When set, every format (2D, 3D, IMAX, 4DX, ...) of that language is
@@ -73,7 +89,7 @@ const WATCH = process.argv.includes("--watch") || process.env.WATCH === "1";
 // VERBOSE=1 echoes every log line to the terminal and adds per-check
 // debug lines (terminal only, so bms.log doesn't fill up).
 const VERBOSE = process.env.VERBOSE === "1";
-const POLL_INTERVAL_MS = Math.max(1, Number(process.env.POLL_INTERVAL_SECONDS) || 5) * 1000;
+const POLL_INTERVAL_MS = Math.max(1, Number(process.env.POLL_INTERVAL_SECONDS) || 30) * 1000;
 const FETCH_TIMEOUT_MS = 15000;
 const MAX_BACKOFF_MS = 60000;
 const HEARTBEAT_MS = 10 * 60 * 1000;
@@ -134,12 +150,62 @@ function debug(message: string, fields?: Record<string, unknown>) {
   if (VERBOSE) log("debug", message, fields);
 }
 
-function loadMovies(): MovieDetails[] {
-  const data = fs.readFileSync(CONFIG_FILE, "utf-8");
-  return JSON.parse(data);
+function loadMovies(): MovieConfig[] {
+  const movies = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
+  for (const movie of movies) {
+    // Old format: a single `date` with theatres stored directly on the entry.
+    if (typeof movie.date === "string" && !Array.isArray(movie.dates)) {
+      movie.dates = [movie.date];
+      movie.theatres = { [movie.date]: movie.theatres ?? {} };
+      delete movie.date;
+    }
+    movie.dates ??= [];
+    movie.theatres ??= {};
+  }
+  return movies;
 }
 
-function saveMovies(movies: MovieDetails[]) {
+// Expands config entries into one target per date. Each target's `theatres`
+// is the entry's own object for that date, so recording a show on the target
+// updates the config entry.
+function expandTargets(movies: MovieConfig[]): MovieDetails[] {
+  const targets: MovieDetails[] = [];
+  for (const movie of movies) {
+    if (movie.found) continue;
+    for (const configDate of movie.dates) {
+      const date = configDate.replace(/\D/g, "");
+      if (date.length !== 8) {
+        logInvalidDate(movie, configDate);
+        continue;
+      }
+      const { dates: _dates, theatres: _theatres, ...rest } = movie;
+      targets.push({ ...rest, date, theatres: (movie.theatres[configDate] ??= {}) });
+    }
+  }
+  return targets;
+}
+
+const invalidDatesLogged = new Set<string>();
+
+function logInvalidDate(movie: MovieConfig, date: string) {
+  const key = `${movie.code}|${movie.city}|${date}`;
+  if (invalidDatesLogged.has(key)) return;
+  invalidDatesLogged.add(key);
+  log("warn", "Invalid date in config, skipping it (use YYYY-MM-DD)", {
+    movie: movie.name, city: movie.city, date,
+  });
+}
+
+function saveMovies(movies: MovieConfig[]) {
+  for (const movie of movies) {
+    // Keep recorded shows only for dates still being watched and that have any.
+    const kept: MovieConfig["theatres"] = {};
+    for (const date of movie.dates) {
+      const recorded = movie.theatres[date];
+      if (recorded && Object.keys(recorded).length > 0) kept[date] = recorded;
+    }
+    movie.theatres = kept;
+  }
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(movies, null, 4) + "\n");
 }
 
@@ -510,9 +576,9 @@ interface CycleResult {
 // Checks every pending movie once, all in parallel.
 async function runCycle(session: BmsSession, chatId: string): Promise<CycleResult> {
   const moviesList = loadMovies();
-  const pending = moviesList.filter((movie) => !movie.found);
+  const pending = expandTargets(moviesList);
   if (pending.length === 0) {
-    debug("No pending movies in config");
+    debug("No pending movie dates in config");
     return { checked: 0, failed: 0, blocked: false };
   }
 
